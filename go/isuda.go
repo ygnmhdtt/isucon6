@@ -31,7 +31,7 @@ const (
 )
 
 var (
-	isutarEndpoint string
+	// isutarEndpoint string
 	isupamEndpoint string
 
 	baseUrl *url.URL
@@ -72,14 +72,12 @@ func authenticate(w http.ResponseWriter, r *http.Request) error {
 func initializeHandler(w http.ResponseWriter, r *http.Request) {
 	_, err := db.Exec(`DELETE FROM entry WHERE id > 7101`)
 	panicIf(err)
-	// _, err = db.Exec(`alter table entry add column keyword_len int(8) default 0 not null`)
-	// panicIf(err)
+
 	_, err = db.Exec(`UPDATE entry set keyword_len = CHARACTER_LENGTH(keyword)`)
 	panicIf(err)
 
-	resp, err := http.Get(fmt.Sprintf("%s/initialize", isutarEndpoint))
+	_, err = db.Exec("TRUNCATE star")
 	panicIf(err)
-	defer resp.Body.Close()
 
 	re.JSON(w, http.StatusOK, map[string]string{"result": "ok"})
 }
@@ -346,18 +344,40 @@ func htmlify(w http.ResponseWriter, r *http.Request, content string) string {
 }
 
 func loadStars(keyword string) []*Star {
-	v := url.Values{}
-	v.Set("keyword", keyword)
-	resp, err := http.Get(fmt.Sprintf("%s/stars", isutarEndpoint) + "?" + v.Encode())
-	panicIf(err)
-	defer resp.Body.Close()
-
-	var data struct {
-		Result []*Star `json:result`
+	// keyword := r.FormValue("keyword")
+	rows, err := db.Query(`SELECT * FROM star WHERE keyword = ?`, keyword)
+	if err != nil && err != sql.ErrNoRows {
+		panicIf(err)
 	}
-	err = json.NewDecoder(resp.Body).Decode(&data)
-	panicIf(err)
-	return data.Result
+
+	stars := make([]*Star, 0, 10)
+	for rows.Next() {
+		s := Star{}
+		err := rows.Scan(&s.ID, &s.Keyword, &s.UserName, &s.CreatedAt)
+		panicIf(err)
+		stars = append(stars, &s)
+	}
+	rows.Close()
+	// var result map[string][]Star
+	// result["result"] = stars
+
+	// re.JSON(w, http.StatusOK, map[string][]Star{
+	// "result": stars,
+	// })
+
+	// v := url.Values{}
+	// v.Set("keyword", keyword)
+	// resp, err := http.Get(fmt.Sprintf("%s/stars", isutarEndpoint) + "?" + v.Encode())
+	// panicIf(err)
+	// defer resp.Body.Close()
+
+	// var data struct {
+	// 	Result []*Star `json:result`
+	// }
+	// err = json.NewDecoder(result).Decode(&data)
+	// panicIf(err)
+	return stars
+	// return data.Result
 }
 
 func isSpamContents(content string) bool {
@@ -393,6 +413,30 @@ func getSession(w http.ResponseWriter, r *http.Request) *sessions.Session {
 	return session
 }
 
+func starsPostHandler(w http.ResponseWriter, r *http.Request) {
+	keyword := r.FormValue("keyword")
+
+	// origin := os.Getenv("ISUDA_ORIGIN")
+	// if origin == "" {
+	// 	origin = "http://localhost:5000"
+	// }
+	// u, err := r.URL.Parse(fmt.Sprintf("%s/keyword/%s", origin, pathURIEscape(keyword)))
+	// panicIf(err)
+	// resp, err := http.Get(u.String())
+	// panicIf(err)
+	// defer resp.Body.Close()
+	// if resp.StatusCode >= 400 {
+	// 	notFound(w)
+	// 	return
+	// }
+
+	user := r.FormValue("user")
+	_, err := db.Exec(`INSERT INTO star (keyword, user_name, created_at) VALUES (?, ?, NOW())`, keyword, user)
+	panicIf(err)
+
+	re.JSON(w, http.StatusOK, map[string]string{"result": "ok"})
+}
+
 func main() {
 	host := os.Getenv("ISUDA_DB_HOST")
 	if host == "" {
@@ -426,10 +470,10 @@ func main() {
 	db.Exec("SET SESSION sql_mode='TRADITIONAL,NO_AUTO_VALUE_ON_ZERO,ONLY_FULL_GROUP_BY'")
 	db.Exec("SET NAMES utf8mb4")
 
-	isutarEndpoint = os.Getenv("ISUTAR_ORIGIN")
-	if isutarEndpoint == "" {
-		isutarEndpoint = "http://localhost:5001"
-	}
+	// isutarEndpoint = os.Getenv("ISUTAR_ORIGIN")
+	// if isutarEndpoint == "" {
+	// 	isutarEndpoint = "http://localhost:5001"
+	// }
 	isupamEndpoint = os.Getenv("ISUPAM_ORIGIN")
 	if isupamEndpoint == "" {
 		isupamEndpoint = "http://localhost:5050"
@@ -480,5 +524,9 @@ func main() {
 	k.Methods("POST").HandlerFunc(myHandler(keywordByKeywordDeleteHandler))
 
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("./public/")))
+
+	s := r.PathPrefix("/stars").Subrouter()
+	// s.Methods("GET").HandlerFunc(myHandler(starsHandler))
+	s.Methods("POST").HandlerFunc(myHandler(starsPostHandler))
 	log.Fatal(http.ListenAndServe(":5000", r))
 }
